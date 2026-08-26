@@ -134,21 +134,23 @@ async function main() {
   console.log(`正在計算 ${dateStr} 的 12 上升星盤配置...`);
   const astroDataPrompt = generateTransitPrompt(dateStr);
 
-  const prompt = `你是一位精通現代西洋占星與心理行為引導的占星大師。以下是 ${dateStr} 當天 12 個上升星座的精確行星與宮位配置資料：
+  const prompt = `你是一位精通個人成長、行為心理學與生活哲學的引導顧問。以下是 ${dateStr} 當天 12 個上升星座的精確星象與宮位能量配置（僅供你內部推演解讀使用）：
 
 ${astroDataPrompt}
 
-請根據上述各上升星座的行星落入宮位配置，為 12 個上升星座撰寫精闢的每日運勢與財運分析。
-語氣風格請保持：專業客觀、沉穩、具心理建設性，著重在個人行動指引與資源配置。
+【核心撰寫要求】：
+1. 嚴禁出現任何占星術語：文中「絕對不能出現」星體名稱（如：太陽、月亮、水星、金星、火星、木星、土星等）以及宮位名稱（如：第幾宮、第1宮、第10宮等）。
+2. 將星象能量「完全轉譯為大眾聽得懂的白話生活與職場語言」，著重在：心態調整、專注力分配、人際互動、財務決策與具體行動。
+3. 語氣風格：沉穩、客觀、具心理建設性與賦能感。
 
-請嚴格輸出為以下 JSON 格式（不要包含 markdown 標籤外的任何閒聊字眼）：
+請嚴格輸出為以下 JSON 格式（不要包含 markdown 標籤外的任何字眼）：
 {
   "date": "${dateStr}",
   "fortune": {
     "aries": {
-      "overview": "整體氣場與運勢解析 (約 80-120 字)",
-      "wealth": "財運、投資與資源配置分析 (約 80-120 字)",
-      "action_tip": "一句話行動錦囊 (約 30 字內)"
+      "overview": "今日整體氣場與心態解析 (約 80-120 字，純白話生活與心理指引，不帶占星術語)",
+      "wealth": "今日財運、消費與資源配置分析 (約 80-120 字，著重具體財務決策與心態)",
+      "action_tip": "一句話行動錦囊 (約 30 字內，明確可落實的微行動)"
     },
     "taurus": { ... },
     "gemini": { ... },
@@ -163,7 +165,7 @@ ${astroDataPrompt}
     "pisces": { ... }
   }
 }`;
-
+  
   console.log("正在呼叫 Gemini API 生成運勢 JSON...");
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
   
