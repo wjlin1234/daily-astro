@@ -165,7 +165,7 @@ ${astroDataPrompt}
 }`;
 
   console.log("正在呼叫 Gemini API 生成運勢 JSON...");
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
   
   const response = await fetch(endpoint, {
     method: 'POST',
