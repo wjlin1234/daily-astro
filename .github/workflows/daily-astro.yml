@@ -18,7 +18,7 @@ jobs:
       - name: 設定 Node.js 環境
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 22
 
       - name: 執行星盤計算與 AI 生成
         env:
