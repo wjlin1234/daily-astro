@@ -1,6 +1,6 @@
 const fs = require('fs');
 
-// --- 1. 天文演算法（從原排盤程式移植） ---
+// --- 1. 天文演算法 ---
 const ZODIAC_SIGNS = [
   { key: 'aries', name: '牡羊座', symbol: '♈' },
   { key: 'taurus', name: '金牛座', symbol: '♉' },
@@ -99,7 +99,6 @@ function getGeocentricPositions(jd) {
   ];
 }
 
-// 計算目標日期的 12 上升星座宮位配置文字
 function generateTransitPrompt(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
   const jd = getJulianDay(new Date(Date.UTC(y, m - 1, d, 4, 0))); // 台灣中午 12:00
@@ -118,7 +117,7 @@ function generateTransitPrompt(dateStr) {
   return text;
 }
 
-// --- 2. 呼叫 Gemini API ---
+// --- 2. 呼叫 Gemini API (含 3 次自動重試機制) ---
 async function main() {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -126,9 +125,9 @@ async function main() {
     process.exit(1);
   }
 
-  // 設定目標日期（台灣時間明天）
+  // 設定目標日期（台灣時間當日）
   const targetDate = new Date();
-  targetDate.setHours(targetDate.getHours() + 8 ); // 取得今天日期
+  targetDate.setHours(targetDate.getHours() + 8);
   const dateStr = targetDate.toISOString().split('T')[0];
 
   console.log(`正在計算 ${dateStr} 的 12 上升星盤配置...`);
@@ -165,22 +164,42 @@ ${astroDataPrompt}
     "pisces": { ... }
   }
 }`;
-  
+
   console.log("正在呼叫 Gemini API 生成運勢 JSON...");
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
   
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: "application/json" }
-    })
-  });
+  let response;
+  let attempts = 0;
+  const maxAttempts = 3;
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Gemini API 呼叫失敗: ${response.status} - ${errorText}`);
+  while (attempts < maxAttempts) {
+    try {
+      attempts++;
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: "application/json" }
+        })
+      });
+
+      if (response.ok) break;
+
+      const errorText = await response.text();
+      console.warn(`第 ${attempts} 次嘗試失敗 (${response.status}): ${errorText}`);
+    } catch (err) {
+      console.warn(`第 ${attempts} 次連線異常: ${err.message}`);
+    }
+
+    if (attempts < maxAttempts) {
+      console.log("等候 5 秒後重試...");
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
+
+  if (!response || !response.ok) {
+    throw new Error(`Gemini API 連續 ${maxAttempts} 次呼叫皆失敗。`);
   }
 
   const resJson = await response.json();
