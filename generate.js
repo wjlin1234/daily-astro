@@ -128,7 +128,7 @@ async function main() {
 
   // 設定目標日期（台灣時間明天）
   const targetDate = new Date();
-  targetDate.setHours(targetDate.getHours() + 8 + 24); // 取得明天日期
+  targetDate.setHours(targetDate.getHours() + 8 ); // 取得今天日期
   const dateStr = targetDate.toISOString().split('T')[0];
 
   console.log(`正在計算 ${dateStr} 的 12 上升星盤配置...`);
