@@ -166,40 +166,38 @@ ${astroDataPrompt}
 }`;
 
   console.log("正在呼叫 Gemini API 生成運勢 JSON...");
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
-  
+  const models = ['gemini-2.5-flash', 'gemini-3.6-flash'];
   let response;
-  let attempts = 0;
-  const maxAttempts = 3;
 
-  while (attempts < maxAttempts) {
-    try {
-      attempts++;
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: "application/json" }
-        })
-      });
+  for (const model of models) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    console.log(`嘗試使用模型: ${model}...`);
+    
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { responseMimeType: "application/json" }
+          })
+        });
 
-      if (response.ok) break;
-
-      const errorText = await response.text();
-      console.warn(`第 ${attempts} 次嘗試失敗 (${response.status}): ${errorText}`);
-    } catch (err) {
-      console.warn(`第 ${attempts} 次連線異常: ${err.message}`);
+        if (response.ok) break;
+        const err = await response.text();
+        console.warn(`${model} 第 ${attempt} 次失敗 (${response.status}): ${err}`);
+      } catch (e) {
+        console.warn(`${model} 連線異常: ${e.message}`);
+      }
+      await new Promise(r => setTimeout(r, 3000));
     }
 
-    if (attempts < maxAttempts) {
-      console.log("等候 5 秒後重試...");
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-    }
+    if (response && response.ok) break;
   }
 
   if (!response || !response.ok) {
-    throw new Error(`Gemini API 連續 ${maxAttempts} 次呼叫皆失敗。`);
+    throw new Error("所有備援模型皆呼叫失敗。");
   }
 
   const resJson = await response.json();
