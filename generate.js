@@ -1,6 +1,6 @@
 const fs = require('fs');
 
-// --- 1. 天文演算法 ---
+// --- 1. 天文演算法（從原排盤程式移植） ---
 const ZODIAC_SIGNS = [
   { key: 'aries', name: '牡羊座', symbol: '♈' },
   { key: 'taurus', name: '金牛座', symbol: '♉' },
@@ -15,6 +15,15 @@ const ZODIAC_SIGNS = [
   { key: 'aquarius', name: '水瓶座', symbol: '♒' },
   { key: 'pisces', name: '雙魚座', symbol: '♓' }
 ];
+const REQUIRED_FORTUNE_FIELDS = ['overview', 'wealth', 'action_tip'];
+const FORBIDDEN_OUTPUT_PATTERNS = [
+  /太陽|月亮|水星|金星|火星|木星|土星/,
+  /第\s*\d+\s*宮|第[一二三四五六七八九十十二]+\s*宮|宮位/
+];
+const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
+const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-3.6-flash'];
+const GEMINI_MAX_ATTEMPTS = 5;
+const GEMINI_RETRY_DELAYS_MS = [15000, 30000, 60000, 90000];
 
 function degToZodiac(deg) {
   const normalized = ((deg % 360) + 360) % 360;
@@ -99,6 +108,7 @@ function getGeocentricPositions(jd) {
   ];
 }
 
+// 計算目標日期的 12 上升星座宮位配置文字
 function generateTransitPrompt(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
   const jd = getJulianDay(new Date(Date.UTC(y, m - 1, d, 4, 0))); // 台灣中午 12:00
@@ -117,7 +127,147 @@ function generateTransitPrompt(dateStr) {
   return text;
 }
 
-// --- 2. 呼叫 Gemini API (含 3 次自動重試機制) ---
+function getTaiwanDateString(daysFromToday = 0, now = new Date()) {
+  const taiwanDate = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+  taiwanDate.setUTCDate(taiwanDate.getUTCDate() + daysFromToday);
+  return taiwanDate.toISOString().split('T')[0];
+}
+
+function extractGeminiText(responseJson) {
+  const text = responseJson?.candidates?.[0]?.content?.parts
+    ?.map(part => part.text || '')
+    .join('')
+    .trim();
+
+  if (!text) {
+    const reason = responseJson?.promptFeedback?.blockReason || responseJson?.candidates?.[0]?.finishReason || '未知原因';
+    throw new Error(`Gemini 回應沒有可用文字內容：${reason}`);
+  }
+
+  return text;
+}
+
+function parseJsonContent(content) {
+  const trimmed = content.trim();
+  const unfenced = trimmed
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  try {
+    return JSON.parse(unfenced);
+  } catch (err) {
+    throw new Error(`Gemini 回應不是有效 JSON：${err.message}`);
+  }
+}
+
+function validateFortuneData(data, expectedDate) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('輸出資料必須是 JSON 物件');
+  }
+
+  if (data.date !== expectedDate) {
+    throw new Error(`輸出日期不符合目標日期：收到 ${data.date || '空值'}，預期 ${expectedDate}`);
+  }
+
+  if (!data.fortune || typeof data.fortune !== 'object' || Array.isArray(data.fortune)) {
+    throw new Error('fortune 欄位必須是物件');
+  }
+
+  for (const sign of ZODIAC_SIGNS) {
+    const fortune = data.fortune[sign.key];
+    if (!fortune || typeof fortune !== 'object' || Array.isArray(fortune)) {
+      throw new Error(`缺少 ${sign.key} 的運勢資料`);
+    }
+
+    for (const field of REQUIRED_FORTUNE_FIELDS) {
+      const value = fortune[field];
+      if (typeof value !== 'string' || value.trim().length === 0) {
+        throw new Error(`${sign.key}.${field} 必須是非空字串`);
+      }
+
+      const forbidden = FORBIDDEN_OUTPUT_PATTERNS.find(pattern => pattern.test(value));
+      if (forbidden) {
+        throw new Error(`${sign.key}.${field} 含有不應出現在前台內容中的占星術語`);
+      }
+    }
+  }
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getRetryDelay(response, attemptIndex) {
+  const retryAfter = response.headers.get('retry-after');
+  if (retryAfter) {
+    const retryAfterSeconds = Number(retryAfter);
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+      return retryAfterSeconds * 1000;
+    }
+
+    const retryAfterDate = Date.parse(retryAfter);
+    if (!Number.isNaN(retryAfterDate)) {
+      return Math.max(retryAfterDate - Date.now(), 0);
+    }
+  }
+
+  return GEMINI_RETRY_DELAYS_MS[attemptIndex - 1] || GEMINI_RETRY_DELAYS_MS[GEMINI_RETRY_DELAYS_MS.length - 1];
+}
+
+async function fetchGeminiResponse(apiKey, prompt) {
+  let lastErrorMessage = '';
+
+  for (const model of GEMINI_MODELS) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+    for (let attempt = 1; attempt <= GEMINI_MAX_ATTEMPTS; attempt++) {
+      console.log(`呼叫 Gemini API (${model})：第 ${attempt}/${GEMINI_MAX_ATTEMPTS} 次嘗試...`);
+
+      let response;
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { responseMimeType: "application/json" }
+          })
+        });
+      } catch (err) {
+        lastErrorMessage = `${model} 連線異常: ${err.message}`;
+        if (attempt >= GEMINI_MAX_ATTEMPTS) break;
+
+        const delayMs = GEMINI_RETRY_DELAYS_MS[attempt - 1] || GEMINI_RETRY_DELAYS_MS[GEMINI_RETRY_DELAYS_MS.length - 1];
+        console.warn(`${lastErrorMessage}\n等待 ${Math.round(delayMs / 1000)} 秒後重試...`);
+        await sleep(delayMs);
+        continue;
+      }
+
+      if (response.ok) {
+        console.log(`${model} 回應成功`);
+        return response.json();
+      }
+
+      const errorText = await response.text();
+      lastErrorMessage = `${model} 呼叫失敗: ${response.status} - ${errorText}`;
+      const shouldRetry = RETRYABLE_STATUS_CODES.has(response.status) && attempt < GEMINI_MAX_ATTEMPTS;
+
+      if (!shouldRetry) {
+        console.warn(lastErrorMessage);
+        break;
+      }
+
+      const delayMs = getRetryDelay(response, attempt);
+      console.warn(`${lastErrorMessage}\n等待 ${Math.round(delayMs / 1000)} 秒後重試...`);
+      await sleep(delayMs);
+    }
+  }
+
+  throw new Error(lastErrorMessage || '所有備援模型皆呼叫失敗');
+}
+
+// --- 2. 呼叫 Gemini API ---
 async function main() {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -125,10 +275,8 @@ async function main() {
     process.exit(1);
   }
 
-  // 設定目標日期（台灣時間當日）
-  const targetDate = new Date();
-  targetDate.setHours(targetDate.getHours() + 8);
-  const dateStr = targetDate.toISOString().split('T')[0];
+  // 設定目標日期（台灣時間今天）
+  const dateStr = getTaiwanDateString();
 
   console.log(`正在計算 ${dateStr} 的 12 上升星盤配置...`);
   const astroDataPrompt = generateTransitPrompt(dateStr);
@@ -164,46 +312,15 @@ ${astroDataPrompt}
     "pisces": { ... }
   }
 }`;
-
-  console.log("正在呼叫 Gemini API 生成運勢 JSON...");
-  const models = ['gemini-2.5-flash', 'gemini-3.6-flash'];
-  let response;
-
-  for (const model of models) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-    console.log(`嘗試使用模型: ${model}...`);
-    
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { responseMimeType: "application/json" }
-          })
-        });
-
-        if (response.ok) break;
-        const err = await response.text();
-        console.warn(`${model} 第 ${attempt} 次失敗 (${response.status}): ${err}`);
-      } catch (e) {
-        console.warn(`${model} 連線異常: ${e.message}`);
-      }
-      await new Promise(r => setTimeout(r, 3000));
-    }
-
-    if (response && response.ok) break;
-  }
-
-  if (!response || !response.ok) {
-    throw new Error("所有備援模型皆呼叫失敗。");
-  }
-
-  const resJson = await response.json();
-  const content = resJson.candidates[0].content.parts[0].text;
   
-  fs.writeFileSync('fortune-today.json', content, 'utf-8');
+  console.log("正在呼叫 Gemini API 生成運勢 JSON...");
+
+  const resJson = await fetchGeminiResponse(apiKey, prompt);
+  const content = extractGeminiText(resJson);
+  const fortuneData = parseJsonContent(content);
+  validateFortuneData(fortuneData, dateStr);
+  
+  fs.writeFileSync('fortune-today.json', `${JSON.stringify(fortuneData, null, 2)}\n`, 'utf-8');
   console.log("成功生成 fortune-today.json！");
 }
 
