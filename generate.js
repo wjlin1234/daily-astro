@@ -21,9 +21,14 @@ const FORBIDDEN_OUTPUT_PATTERNS = [
   /第\s*\d+\s*宮|第[一二三四五六七八九十十二]+\s*宮|宮位/
 ];
 const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
-const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-3.6-flash'];
-const GEMINI_MAX_ATTEMPTS = 5;
-const GEMINI_RETRY_DELAYS_MS = [15000, 30000, 60000, 90000];
+const GEMINI_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-3.6-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash-lite'
+];
+const GEMINI_MAX_ATTEMPTS = 4;
+const GEMINI_RETRY_DELAYS_MS = [20000, 40000, 80000];
 
 function degToZodiac(deg) {
   const normalized = ((deg % 360) + 360) % 360;
@@ -215,52 +220,63 @@ function getRetryDelay(response, attemptIndex) {
   return GEMINI_RETRY_DELAYS_MS[attemptIndex - 1] || GEMINI_RETRY_DELAYS_MS[GEMINI_RETRY_DELAYS_MS.length - 1];
 }
 
+async function requestGeminiModel(apiKey, prompt, model) {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  let lastErrorMessage = '';
+
+  for (let attempt = 1; attempt <= GEMINI_MAX_ATTEMPTS; attempt++) {
+    console.log(`呼叫 Gemini API (${model})：第 ${attempt}/${GEMINI_MAX_ATTEMPTS} 次嘗試...`);
+
+    let response;
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: "application/json" }
+        })
+      });
+    } catch (err) {
+      lastErrorMessage = `${model} 連線異常: ${err.message}`;
+      if (attempt >= GEMINI_MAX_ATTEMPTS) break;
+
+      const delayMs = GEMINI_RETRY_DELAYS_MS[attempt - 1] || GEMINI_RETRY_DELAYS_MS[GEMINI_RETRY_DELAYS_MS.length - 1];
+      console.warn(`${lastErrorMessage}\n等待 ${Math.round(delayMs / 1000)} 秒後重試...`);
+      await sleep(delayMs);
+      continue;
+    }
+
+    if (response.ok) {
+      console.log(`${model} 回應成功`);
+      return response.json();
+    }
+
+    const errorText = await response.text();
+    lastErrorMessage = `${model} 呼叫失敗: ${response.status} - ${errorText}`;
+    const shouldRetry = RETRYABLE_STATUS_CODES.has(response.status) && attempt < GEMINI_MAX_ATTEMPTS;
+
+    if (!shouldRetry) {
+      throw new Error(lastErrorMessage);
+    }
+
+    const delayMs = getRetryDelay(response, attempt);
+    console.warn(`${lastErrorMessage}\n等待 ${Math.round(delayMs / 1000)} 秒後重試...`);
+    await sleep(delayMs);
+  }
+
+  throw new Error(lastErrorMessage || `${model} 呼叫失敗`);
+}
+
 async function fetchGeminiResponse(apiKey, prompt) {
   let lastErrorMessage = '';
 
   for (const model of GEMINI_MODELS) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
-    for (let attempt = 1; attempt <= GEMINI_MAX_ATTEMPTS; attempt++) {
-      console.log(`呼叫 Gemini API (${model})：第 ${attempt}/${GEMINI_MAX_ATTEMPTS} 次嘗試...`);
-
-      let response;
-      try {
-        response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { responseMimeType: "application/json" }
-          })
-        });
-      } catch (err) {
-        lastErrorMessage = `${model} 連線異常: ${err.message}`;
-        if (attempt >= GEMINI_MAX_ATTEMPTS) break;
-
-        const delayMs = GEMINI_RETRY_DELAYS_MS[attempt - 1] || GEMINI_RETRY_DELAYS_MS[GEMINI_RETRY_DELAYS_MS.length - 1];
-        console.warn(`${lastErrorMessage}\n等待 ${Math.round(delayMs / 1000)} 秒後重試...`);
-        await sleep(delayMs);
-        continue;
-      }
-
-      if (response.ok) {
-        console.log(`${model} 回應成功`);
-        return response.json();
-      }
-
-      const errorText = await response.text();
-      lastErrorMessage = `${model} 呼叫失敗: ${response.status} - ${errorText}`;
-      const shouldRetry = RETRYABLE_STATUS_CODES.has(response.status) && attempt < GEMINI_MAX_ATTEMPTS;
-
-      if (!shouldRetry) {
-        console.warn(lastErrorMessage);
-        break;
-      }
-
-      const delayMs = getRetryDelay(response, attempt);
-      console.warn(`${lastErrorMessage}\n等待 ${Math.round(delayMs / 1000)} 秒後重試...`);
-      await sleep(delayMs);
+    try {
+      return await requestGeminiModel(apiKey, prompt, model);
+    } catch (err) {
+      lastErrorMessage = err.message;
+      console.warn(`${model} 無法完成，切換下一個備援模型。原因：${err.message}`);
     }
   }
 

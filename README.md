@@ -37,7 +37,7 @@ export GEMINI_API_KEY="你的 API key"
 node generate.js
 ```
 
-腳本會生成台灣時間「今天」的資料。若 Gemini 暫時忙碌或限流，腳本會自動等待並重試。若 Gemini 回應不是有效 JSON、缺少星座欄位、缺少必要文字欄位，或輸出含有前台不應出現的占星術語，腳本會停止並保留原本的 `fortune-today.json`。
+腳本會生成台灣時間「今天」的資料。若 Gemini 暫時忙碌或限流，腳本會使用較長的指數退避等待後重試，並依序切換到 Flash-Lite 備援模型。若 Gemini 回應不是有效 JSON、缺少星座欄位、缺少必要文字欄位，或輸出含有前台不應出現的占星術語，腳本會停止並保留原本的 `fortune-today.json`。
 
 ## GitHub Actions 設定
 
@@ -47,7 +47,7 @@ Repository 需要設定 secret：
 GEMINI_API_KEY
 ```
 
-排程目前是每天 `UTC 16:15` 執行，也就是台灣時間隔日 `00:15`。更新成功後，workflow 會提交新的 `fortune-today.json` 到 repository。
+排程目前是每天 `UTC 16:37` 執行，也就是台灣時間隔日 `00:37`。這個時間避開整點與 15 分排程尖峰。更新成功後，workflow 會提交新的 `fortune-today.json` 到 repository。
 
 ## 部署
 
